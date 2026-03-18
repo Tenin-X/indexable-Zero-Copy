@@ -1,0 +1,879 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ix — Zero-Copy Suspend Storage</title>
+  <meta name="description" content="A Rust-based micro-VMM that freezes executing KVM guests, extracts full state, and flushes it to disk via io_uring with zero-copy. Sub-millisecond snapshotting for AI infrastructure." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0e0e0e;
+      --fg: #c8c8c8;
+      --fg-dim: #6a6a6a;
+      --fg-bright: #e8e8e8;
+      --accent: #ffffff;
+      --border: #1f1f1f;
+      --tag-bg: #1a1a1a;
+      --tag-border: #2a2a2a;
+      --demo-bg: #111111;
+      --green: #4ade80;
+      --yellow: #facc15;
+      --cyan: #67e8f9;
+      --red: #f87171;
+      --purple: #c084fc;
+    }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      background: var(--bg);
+      color: var(--fg);
+      font-family: 'JetBrains Mono', 'Courier New', monospace;
+      font-size: 13px;
+      line-height: 1.7;
+      min-height: 100vh;
+    }
+
+    /* ── Nav ── */
+    nav {
+      border-bottom: 1px solid var(--border);
+      padding: 14px 32px;
+    }
+    .nav-inner {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 0 32px;
+    }
+
+    .nav-logo {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--accent);
+      text-decoration: none;
+      font-size: 14px;
+      letter-spacing: 0.02em;
+    }
+
+    .logo-icon {
+      width: 20px;
+      height: 20px;
+      flex-shrink: 0;
+    }
+    .logo-icon svg { width: 100%; height: 100%; }
+
+    .nav-slash {
+      color: var(--fg-dim);
+      font-weight: 300;
+      margin: 0 2px;
+    }
+
+    .nav-project {
+      color: var(--fg-bright);
+      font-weight: 400;
+    }
+
+    .nav-lang {
+      display: flex;
+      gap: 0;
+      font-size: 12px;
+      color: var(--fg-dim);
+    }
+    .nav-lang a {
+      color: var(--fg-dim);
+      text-decoration: none;
+      padding: 0 6px;
+      border-right: 1px solid var(--border);
+      transition: color 0.2s;
+    }
+    .nav-lang a:last-child { border-right: none; }
+    .nav-lang a.active, .nav-lang a:hover { color: var(--fg-bright); }
+
+    /* ── Main content wrapper ── */
+    main {
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 52px 32px 80px;
+    }
+
+    section { margin-bottom: 52px; }
+
+    .section-label {
+      font-size: 11px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--accent);
+      margin-bottom: 12px;
+    }
+
+    .section-body {
+      color: var(--fg);
+      font-size: 13px;
+      line-height: 1.8;
+    }
+
+    .section-body strong, .tag {
+      color: var(--fg-bright);
+      background: var(--tag-bg);
+      border: 1px solid var(--tag-border);
+      padding: 1px 7px;
+      border-radius: 2px;
+      font-size: 12px;
+      font-weight: 400;
+    }
+
+    /* ── Visual demo box ── */
+    .demo-wrap {
+      margin: 24px 0;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      overflow: hidden;
+      background: var(--demo-bg);
+    }
+
+    .demo-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--border);
+      background: #0a0a0a;
+    }
+
+    .dot { width: 9px; height: 9px; border-radius: 50%; }
+    .dot.r { background: #ef4444; }
+    .dot.y { background: #eab308; }
+    .dot.g { background: #22c55e; }
+    .demo-title {
+      margin-left: 6px;
+      font-size: 11px;
+      color: var(--fg-dim);
+      letter-spacing: 0.06em;
+    }
+
+    /* ── The actual animated visualiser ── */
+    #demo {
+      padding: 16px 16px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    /* Phase timeline across the top */
+    .timeline {
+      display: flex;
+      gap: 0;
+      margin-bottom: 14px;
+      border: 1px solid var(--border);
+      border-radius: 3px;
+      overflow: hidden;
+    }
+
+    .phase {
+      flex: 1;
+      text-align: center;
+      padding: 5px 4px;
+      font-size: 9px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--fg-dim);
+      border-right: 1px solid var(--border);
+      transition: background 0.4s, color 0.4s;
+    }
+    .phase:last-child { border-right: none; }
+    .phase.active { background: #1a1a1a; color: var(--accent); }
+    .phase.done { background: #0f1a0f; color: var(--green); }
+
+    /* VM diagram area */
+    .diagram {
+      display: grid;
+      grid-template-columns: 1fr 60px 1fr;
+      gap: 10px;
+      align-items: center;
+      margin-bottom: 14px;
+    }
+
+    .vm-box {
+      border: 1px solid var(--border);
+      border-radius: 3px;
+      padding: 10px 10px;
+      background: #111;
+      transition: border-color 0.4s;
+    }
+    .vm-box.running { border-color: var(--green); }
+    .vm-box.suspended { border-color: var(--yellow); }
+    .vm-box.restored { border-color: var(--cyan); }
+
+    .vm-label {
+      font-size: 9px;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      margin-bottom: 6px;
+      color: var(--fg-dim);
+    }
+
+    .reg-row {
+      display: flex;
+      justify-content: space-between;
+      font-size: 10px;
+      margin-bottom: 2px;
+      font-family: 'JetBrains Mono', monospace;
+    }
+    .reg-name { color: var(--fg-dim); }
+    .reg-val { color: var(--cyan); transition: color 0.3s; }
+    .reg-val.highlight { color: var(--yellow); }
+    .reg-val.matched { color: var(--green); }
+
+    .arrow-col {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 6px;
+      color: var(--fg-dim);
+      font-size: 10px;
+      text-align: center;
+    }
+
+    .arrow {
+      width: 40px;
+      height: 1px;
+      background: var(--border);
+      position: relative;
+      transition: background 0.4s;
+    }
+    .arrow::after {
+      content: '›';
+      position: absolute;
+      right: -5px;
+      top: -8px;
+      font-size: 14px;
+    }
+    .arrow.active { background: var(--yellow); }
+    .arrow.active::after { color: var(--yellow); }
+    .arrow.done { background: var(--green); }
+    .arrow.done::after { color: var(--green); }
+
+    .disk-box {
+      border: 1px solid var(--border);
+      border-radius: 3px;
+      padding: 10px 10px;
+      background: #111;
+      transition: border-color 0.4s;
+      display: flex;
+      flex-direction: column;
+    }
+    .disk-box.writing { border-color: var(--yellow); }
+    .disk-box.written { border-color: var(--green); }
+
+    .disk-label {
+      font-size: 9px;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      margin-bottom: 6px;
+      color: var(--fg-dim);
+    }
+
+    .disk-bar-wrap {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-end;
+      gap: 4px;
+    }
+    .disk-bar {
+      height: 4px;
+      background: var(--border);
+      border-radius: 1px;
+      overflow: hidden;
+    }
+    .disk-bar-fill {
+      height: 100%;
+      width: 0%;
+      background: var(--yellow);
+      border-radius: 1px;
+      transition: width 0.6s ease, background 0.4s;
+    }
+    .disk-bar-fill.done { background: var(--green); }
+
+    .disk-size {
+      font-size: 10px;
+      color: var(--fg-dim);
+      margin-top: 6px;
+    }
+
+    /* Log / status area */
+    .log-area {
+      border: 1px solid var(--border);
+      border-radius: 3px;
+      padding: 8px 10px;
+      max-height: 160px;
+      overflow-y: auto;
+      scrollbar-width: none;        /* Firefox */
+      -ms-overflow-style: none;     /* IE/Edge */
+      background: #0a0a0a;
+      font-size: 10px;
+      line-height: 1.5;
+    }
+    .log-area::-webkit-scrollbar { display: none; }  /* Chrome/Safari */
+
+    .log-line { margin-bottom: 2px; }
+    .log-line .prefix { color: var(--fg-dim); }
+    .log-line .ok { color: var(--green); }
+    .log-line .warn { color: var(--yellow); }
+    .log-line .info { color: var(--cyan); }
+    .log-line .val { color: var(--purple); }
+
+    /* cursor blink */
+    .cursor {
+      display: inline-block;
+      width: 7px;
+      height: 12px;
+      background: var(--fg-bright);
+      animation: blink 1s step-end infinite;
+      vertical-align: text-bottom;
+      margin-left: 2px;
+    }
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
+
+    /* replay button */
+    .replay-btn {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-top: 16px;
+      background: none;
+      border: 1px solid var(--border);
+      border-radius: 3px;
+      color: var(--fg-dim);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      padding: 6px 14px;
+      cursor: pointer;
+      letter-spacing: 0.06em;
+      transition: border-color 0.2s, color 0.2s;
+    }
+    .replay-btn:hover { border-color: var(--fg-dim); color: var(--fg-bright); }
+
+    /* latency chips */
+    .latency-row {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-top: 14px;
+    }
+    .latency-chip {
+      border: 1px solid var(--border);
+      border-radius: 3px;
+      padding: 5px 10px;
+      font-size: 11px;
+      color: var(--fg-dim);
+      opacity: 0;
+      transform: translateY(4px);
+      transition: opacity 0.4s, transform 0.4s, border-color 0.3s;
+    }
+    .latency-chip.visible { opacity: 1; transform: translateY(0); }
+    .latency-chip span { color: var(--green); }
+
+    /* ── Stack section ── */
+    .stack-list { margin-top: 4px; }
+    .stack-item {
+      display: flex;
+      gap: 0;
+      margin-bottom: 12px;
+      line-height: 1.7;
+    }
+    .stack-item .tag { align-self: flex-start; margin-right: 8px; white-space: nowrap; flex-shrink: 0; }
+    .stack-item .desc { color: var(--fg); }
+
+    /* ── Why section ── */
+    .why-body { color: var(--fg); line-height: 1.8; }
+    .why-body code {
+      color: var(--fg-bright);
+      background: var(--tag-bg);
+      border: 1px solid var(--tag-border);
+      padding: 0 5px;
+      border-radius: 2px;
+      font-family: inherit;
+    }
+
+    /* ── Footer ── */
+    footer {
+      border-top: 1px solid var(--border);
+      padding: 20px 32px;
+    }
+    .footer-inner {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      font-size: 12px;
+      color: var(--fg-dim);
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 0 32px;
+    }
+    .footer-left { line-height: 1.8; }
+    .footer-left a { color: var(--fg-dim); text-decoration: none; }
+    .footer-right {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      gap: 3px;
+    }
+    .footer-right a { color: var(--fg-dim); text-decoration: none; transition: color 0.2s; }
+    .footer-right a:hover { color: var(--fg-bright); }
+
+    /* ── Responsive ── */
+    @media (max-width: 600px) {
+      nav { padding: 12px 16px; }
+      main { padding: 36px 16px 60px; }
+      .diagram { grid-template-columns: 1fr; }
+      .arrow-col { display: none; }
+      footer { flex-direction: column; gap: 16px; }
+      .footer-right { align-items: flex-start; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ── Navigation ── -->
+<nav>
+  <div class="nav-inner">
+    <a class="nav-logo" href="#">
+      <span class="logo-icon">
+        <svg viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <!-- Top diamond -->
+          <polygon points="50,8 88,38 50,55 12,38" fill="#ffffff"/>
+          <!-- Middle chevron -->
+          <polygon points="12,50 88,50 50,67" fill="#ffffff"/>
+          <!-- Bottom chevron -->
+          <polygon points="12,62 88,62 50,82" fill="#ffffff"/>
+        </svg>
+      </span>
+      ix <span class="nav-slash">/</span> <span class="nav-project">Zero-copy</span>
+    </a>
+    <div class="nav-lang">
+      <a href="#" class="active" onclick="switchLang('en');return false;">en</a>
+      <a href="#" onclick="switchLang('ja');return false;">ja</a>
+      <a href="#" onclick="switchLang('zh');return false;">zh</a>
+      <a href="#" onclick="switchLang('ko');return false;">ko</a>
+    </div>
+  </div>
+</nav>
+
+<!-- ── Main ── -->
+<main>
+
+  <!-- Problem -->
+  <section>
+    <div class="section-label" data-i18n="problem_label">The Problem: LLM Wait Time</div>
+    <div class="section-body" data-i18n="problem_body">
+      AI coding agents spend most of their time waiting for LLM API responses. Keeping a KVM guest alive, consuming active
+      RAM and CPU scheduler cycles during this network I/O downtime, is a significant waste of infrastructure resources.
+    </div>
+  </section>
+
+  <!-- Solution (above demo) -->
+  <section>
+    <div class="section-label" data-i18n="solution_label">The Solution: What I Built</div>
+    <div class="section-body" data-i18n="solution_body">
+      I built a Rust-based micro-VMM that instantly freezes an executing KVM guest, extracts its state, and flushes memory
+      directly to block storage via <strong>'io_uring'</strong> with zero-copy.
+      When the LLM responds, the VM wakes up and resumes execution exactly where it left off.
+    </div>
+
+    <!-- ─────────────── VISUAL DEMO ─────────────── -->
+    <div class="demo-wrap">
+      <div class="demo-header">
+        <span class="dot r"></span>
+        <span class="dot y"></span>
+        <span class="dot g"></span>
+        <span class="demo-title">suspend_storage — live simulation</span>
+      </div>
+
+      <div id="demo">
+        <!-- Phase timeline -->
+        <div class="timeline">
+          <div class="phase" id="ph-boot">Boot</div>
+          <div class="phase" id="ph-run">Run</div>
+          <div class="phase" id="ph-suspend">Suspend</div>
+          <div class="phase" id="ph-flush">io_uring Flush</div>
+          <div class="phase" id="ph-restore">Restore</div>
+          <div class="phase" id="ph-verify">Verify</div>
+        </div>
+
+        <!-- Main diagram: VM ←→ Disk -->
+        <div class="diagram">
+          <!-- VM box -->
+          <div class="vm-box" id="vm-box">
+            <div class="vm-label">KVM vCPU — real-mode payload</div>
+            <div class="reg-row"><span class="reg-name">RIP</span><span class="reg-val" id="r-rip">0x0000</span></div>
+            <div class="reg-row"><span class="reg-name">RAX</span><span class="reg-val" id="r-rax">0x0000</span></div>
+            <div class="reg-row"><span class="reg-name">RBX</span><span class="reg-val" id="r-rbx">0x0000</span></div>
+            <div class="reg-row"><span class="reg-name">RCX</span><span class="reg-val" id="r-rcx">0x0000</span></div>
+            <div class="reg-row"><span class="reg-name">MEM </span><span class="reg-val" id="r-mem">64 KB — zeroed</span></div>
+          </div>
+
+          <!-- Arrow col -->
+          <div class="arrow-col">
+            <div class="arrow" id="arrow-flush"></div>
+            <div style="font-size:9px;color:var(--fg-dim);margin:2px 0;">io_uring</div>
+            <div class="arrow" id="arrow-restore" style="transform:scaleX(-1);"></div>
+          </div>
+
+          <!-- Disk box -->
+          <div class="disk-box" id="disk-box">
+            <div class="disk-label">vm.snapshot — block storage</div>
+            <div class="disk-bar-wrap">
+              <div class="disk-bar"><div class="disk-bar-fill" id="disk-fill-1"></div></div>
+              <div class="disk-bar"><div class="disk-bar-fill" id="disk-fill-2"></div></div>
+              <div class="disk-bar"><div class="disk-bar-fill" id="disk-fill-3"></div></div>
+              <div class="disk-bar"><div class="disk-bar-fill" id="disk-fill-4"></div></div>
+              <div class="disk-bar"><div class="disk-bar-fill" id="disk-fill-5"></div></div>
+            </div>
+            <div class="disk-size" id="disk-size">0 bytes written</div>
+          </div>
+        </div>
+
+        <!-- Log output -->
+        <div class="log-area" id="log"></div>
+
+        <!-- Latency chips -->
+        <div class="latency-row" id="chips"></div>
+
+        <!-- Controls -->
+        <button class="replay-btn" id="replay-btn" onclick="startDemo()">↺ replay simulation</button>
+      </div>
+    </div>
+    <!-- ─────────────── END DEMO ─────────────── -->
+  </section>
+
+  <!-- Stack -->
+  <section>
+  <div class="section-label" data-i18n="stack_label">The Stack</div>
+    <div class="stack-list">
+      <div class="stack-item">
+        <span class="tag" data-i18n="stack_vmm_tag">Minimal VMM</span>
+        <span class="desc" data-i18n="stack_vmm_desc">Built with kvm-ioctls and kvm-bindings against /dev/kvm. Guest RAM is explicitly allocated via mmap.</span>
+      </div>
+      <div class="stack-item">
+        <span class="tag" data-i18n="stack_state_tag">State Extraction</span>
+        <span class="desc" data-i18n="stack_state_desc">Uses KVM_GET_REGS and KVM_GET_SREGS to serialize architecture states and define guest memory boundaries for deterministic pausing.</span>
+      </div>
+      <div class="stack-item">
+        <span class="tag" data-i18n="stack_io_tag">Zero-Copy I/O</span>
+        <span class="desc" data-i18n="stack_io_desc">Bypasses userspace buffering entirely. Uses IORING_OP_WRITE_FIXED (DMA) to submit guest memory pages directly from the VMM's mmap'ed physical memory to storage.</span>
+      </div>
+      <div class="stack-item">
+        <span class="tag" data-i18n="stack_verify_tag">Verification</span>
+        <span class="desc" data-i18n="stack_verify_desc">The guest runs a bare-metal 16-bit real-mode payload that constantly mutates registers, mathematically proving exact-state resumption post-wake.</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- Why -->
+  <section>
+    <div class="section-label" data-i18n="why_label">Why This Matters for Indexable</div>
+    <div class="why-body" data-i18n="why_body">
+      This solves the hyper-density problem for AI agents. Conceptually, the <code>'io_uring'</code> DMA approach used
+      here to write directly to block storage mirrors how ix.dev pushes state over libfabric/RDMA to its
+      content-addressable storage layer. It is built entirely in safe, idiomatic Rust with strict clippy configurations,
+      designed for modern Linux kernels.
+    </div>
+  </section>
+
+</main>
+
+<!-- ── Footer ── -->
+<footer>
+  <div class="footer-inner">
+    <div class="footer-left">
+      ix<br/>
+      © 2026 Indexable, Inc.
+    </div>
+    <div class="footer-right">
+      <a href="#">docs</a>
+      <a href="#">careers</a>
+      <a href="#">discord</a>
+    </div>
+  </div>
+</footer>
+
+<!-- ── Demo Script ── -->
+<script>
+  const phases = ['ph-boot','ph-run','ph-suspend','ph-flush','ph-restore','ph-verify'];
+
+  function setPhase(idx) {
+    phases.forEach((id, i) => {
+      const el = document.getElementById(id);
+      el.className = 'phase' + (i < idx ? ' done' : i === idx ? ' active' : '');
+    });
+  }
+
+  function log(html) {
+    const area = document.getElementById('log');
+    area.innerHTML += `<div class="log-line">${html}</div>`;
+    area.scrollTop = area.scrollHeight;
+  }
+
+  function setReg(id, val, cls = '') {
+    const el = document.getElementById(id);
+    el.textContent = val;
+    el.className = 'reg-val ' + cls;
+  }
+
+  function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+  function setArrow(id, state) {
+    const el = document.getElementById(id);
+    el.className = 'arrow ' + state;
+  }
+
+  function setDiskFill(pct, done = false) {
+    [1,2,3,4,5].forEach((i, idx) => {
+      const el = document.getElementById('disk-fill-' + i);
+      const delay = idx * 80;
+      setTimeout(() => {
+        el.style.width = pct + '%';
+        if (done) el.classList.add('done');
+        else el.classList.remove('done');
+      }, delay);
+    });
+  }
+
+  function addChip(label, val) {
+    const chips = document.getElementById('chips');
+    const chip = document.createElement('div');
+    chip.className = 'latency-chip';
+    chip.innerHTML = `${label}: <span>${val}</span>`;
+    chips.appendChild(chip);
+    setTimeout(() => chip.classList.add('visible'), 50);
+  }
+
+  async function startDemo() {
+    // Reset
+    document.getElementById('log').innerHTML = '';
+    document.getElementById('chips').innerHTML = '';
+    document.getElementById('disk-size').textContent = '0 bytes written';
+    document.getElementById('vm-box').className = 'vm-box';
+    document.getElementById('disk-box').className = 'disk-box';
+    setArrow('arrow-flush', '');
+    setArrow('arrow-restore', '');
+    setDiskFill(0);
+    setReg('r-rip','0x0000'); setReg('r-rax','0x0000');
+    setReg('r-rbx','0x0000'); setReg('r-rcx','0x0000');
+    setReg('r-mem','64 KB — zeroed');
+    setPhase(-1);
+    document.getElementById('replay-btn').disabled = true;
+
+    await sleep(400);
+
+    // ── Phase 0: Boot ──
+    setPhase(0);
+    log(`<span class="prefix">[vmm]  </span>opening /dev/kvm…`);
+    await sleep(500);
+    log(`<span class="prefix">[vmm]  </span>mmap'd <span class="info">65536</span> bytes guest RAM`);
+    await sleep(400);
+    log(`<span class="prefix">[vmm]  </span>payload loaded at gpa <span class="val">0x1000</span> (<span class="info">14 bytes</span>)`);
+    await sleep(400);
+    log(`<span class="prefix">[vmm]  </span>vCPU created — RIP = <span class="val">0x1000</span>`);
+    document.getElementById('vm-box').className = 'vm-box running';
+    setReg('r-rip','0x1000','');
+    setReg('r-mem','64 KB — mapped','');
+    await sleep(600);
+
+    // ── Phase 1: Run (3 exits) ──
+    setPhase(1);
+    const exits = [
+      { rip:'0x1009', rax:'0x1234', rbx:'0x5678', rcx:'0x68AC' },
+      { rip:'0x1009', rax:'0x1234', rbx:'0x5678', rcx:'0x68AC' },
+      { rip:'0x1009', rax:'0x1234', rbx:'0x5678', rcx:'0x68AC' },
+    ];
+    for (let i = 0; i < 3; i++) {
+      await sleep(500);
+      const e = exits[i];
+      setReg('r-rip', e.rip, 'highlight');
+      setReg('r-rax', e.rax, 'highlight');
+      setReg('r-rbx', e.rbx, 'highlight');
+      setReg('r-rcx', e.rcx, 'highlight');
+      log(`<span class="prefix">[run]  </span>VM exit #${i+1}: port=<span class="val">0x10</span> | RAX=<span class="info">${e.rax}</span> RBX=<span class="info">${e.rbx}</span> RCX=<span class="info">${e.rcx}</span>`);
+      await sleep(200);
+      setReg('r-rip', e.rip, '');
+      setReg('r-rax', e.rax, '');
+      setReg('r-rbx', e.rbx, '');
+      setReg('r-rcx', e.rcx, '');
+    }
+    await sleep(400);
+    log(`<span class="prefix">[run]  </span><span class="warn">3 iterations — suspending</span>`);
+
+    // ── Phase 2: Suspend ──
+    setPhase(2);
+    await sleep(300);
+    document.getElementById('vm-box').className = 'vm-box suspended';
+    log(`<span class="prefix">[state]</span>KVM_GET_REGS → captured`);
+    await sleep(300);
+    log(`<span class="prefix">[state]</span>KVM_GET_SREGS → captured`);
+    await sleep(300);
+    log(`<span class="prefix">[state]</span>guest memory slice: <span class="info">65536 bytes</span>`);
+    addChip('halt', '0.031ms');
+    await sleep(500);
+
+    // ── Phase 3: io_uring Flush ──
+    setPhase(3);
+    setArrow('arrow-flush', 'active');
+    document.getElementById('disk-box').className = 'disk-box writing';
+    log(`<span class="prefix">[io_uring]</span>IORING_OP_WRITE — SQE submitted`);
+    await sleep(200);
+
+    // Animate bars filling
+    for (let p = 0; p <= 100; p += 8) {
+      setDiskFill(p);
+      document.getElementById('disk-size').textContent = Math.round((p / 100) * 65860) + ' bytes written';
+      await sleep(40);
+    }
+    setDiskFill(100, true);
+    document.getElementById('disk-box').className = 'disk-box written';
+    document.getElementById('disk-size').textContent = '65,860 bytes written';
+    setArrow('arrow-flush', 'done');
+    log(`<span class="prefix">[io_uring]</span>CQE received: <span class="ok">65860 bytes</span>`);
+    await sleep(300);
+    log(`<span class="prefix">[io_uring]</span>fsync complete — snapshot durable`);
+    addChip('flush', '0.214ms');
+    await sleep(600);
+
+    // ── Phase 4: Restore ──
+    setPhase(4);
+    setArrow('arrow-restore', 'active');
+    document.getElementById('vm-box').className = 'vm-box';
+    log(`<span class="prefix">[restore]</span>IORING_OP_READ — reading vm.snapshot`);
+    await sleep(600);
+    log(`<span class="prefix">[restore]</span>KVM_SET_REGS → registers loaded`);
+    await sleep(300);
+    log(`<span class="prefix">[restore]</span>KVM_SET_SREGS → segment regs loaded`);
+    await sleep(300);
+    log(`<span class="prefix">[restore]</span>guest memory restored`);
+    setArrow('arrow-restore', 'done');
+    document.getElementById('vm-box').className = 'vm-box restored';
+    setReg('r-rip','0x1009','matched');
+    setReg('r-rax','0x1234','matched');
+    setReg('r-rbx','0x5678','matched');
+    setReg('r-rcx','0x68AC','matched');
+    setReg('r-mem','64 KB — restored','matched');
+    addChip('restore', '0.187ms');
+    await sleep(600);
+
+    // ── Phase 5: Verify ──
+    setPhase(5);
+    await sleep(300);
+    log(`<span class="prefix">[verify]</span>register integrity: <span class="ok">✓ PASS</span>`);
+    await sleep(300);
+    log(`<span class="prefix">[verify]</span>memory integrity:   <span class="ok">✓ PASS</span>`);
+    await sleep(400);
+    log(`<span class="prefix">[run]  </span>post-restore exit: RAX=<span class="ok">0x1234</span> RBX=<span class="ok">0x5678</span> RCX=<span class="ok">0x68AC</span>`);
+    await sleep(300);
+    log(`<span class="prefix">[run]  </span><span class="ok">VM resumed — execution identical ✓</span>`);
+    addChip('total e2e', '0.432ms');
+
+    // Cursor at end
+    document.getElementById('log').innerHTML += `<span class="cursor"></span>`;
+    document.getElementById('replay-btn').disabled = false;
+  }
+
+  // Auto-start after fonts load
+  document.fonts.ready.then(() => setTimeout(startDemo, 400));
+
+  // ── i18n Language Switching ──
+  const i18n = {
+    en: {
+      problem_label: 'The Problem: LLM Wait Time',
+      problem_body: 'AI coding agents spend most of their time waiting for LLM API responses. Keeping a KVM guest alive, consuming active RAM and CPU scheduler cycles during this network I/O downtime, is a significant waste of infrastructure resources.',
+      solution_label: 'The Solution: What I Built',
+      solution_body: 'I built a Rust-based micro-VMM that instantly freezes an executing KVM guest, extracts its state, and flushes memory directly to block storage via <strong>\'io_uring\'</strong> with zero-copy. When the LLM responds, the VM wakes up and resumes execution exactly where it left off.',
+      stack_label: 'The Stack',
+      stack_vmm_tag: 'Minimal VMM',
+      stack_vmm_desc: 'Built with kvm-ioctls and kvm-bindings against /dev/kvm. Guest RAM is explicitly allocated via mmap.',
+      stack_state_tag: 'State Extraction',
+      stack_state_desc: 'Uses KVM_GET_REGS and KVM_GET_SREGS to serialize architecture states and define guest memory boundaries for deterministic pausing.',
+      stack_io_tag: 'Zero-Copy I/O',
+      stack_io_desc: 'Bypasses userspace buffering entirely. Uses IORING_OP_WRITE_FIXED (DMA) to submit guest memory pages directly from the VMM\'s mmap\'ed physical memory to storage.',
+      stack_verify_tag: 'Verification',
+      stack_verify_desc: 'The guest runs a bare-metal 16-bit real-mode payload that constantly mutates registers, mathematically proving exact-state resumption post-wake.',
+      why_label: 'Why This Matters for Indexable',
+      why_body: 'This solves the hyper-density problem for AI agents. Conceptually, the <code>\'io_uring\'</code> DMA approach used here to write directly to block storage mirrors how ix.dev pushes state over libfabric/RDMA to its content-addressable storage layer. It is built entirely in safe, idiomatic Rust with strict clippy configurations, designed for modern Linux kernels.',
+    },
+    ja: {
+      problem_label: '問題：LLM待機時間',
+      problem_body: 'AIコーディングエージェントは、LLM APIの応答待ちに大半の時間を費やしています。このネットワークI/Oのダウンタイム中にKVMゲストを活性状態に保ち、RAMとCPUスケジューラのサイクルを消費し続けることは、インフラリソースの重大な無駄です。',
+      solution_label: '解決策：私が構築したもの',
+      solution_body: '実行中のKVMゲストを瞬時にフリーズし、その状態を抽出し、<strong>\'io_uring\'</strong>を介してゼロコピーでブロックストレージにメモリをフラッシュするRustベースのマイクロVMMを構築しました。LLMが応答すると、VMは中断した場所から正確に実行を再開します。',
+      stack_label: '技術スタック',
+      stack_vmm_tag: '最小VMM',
+      stack_vmm_desc: 'kvm-ioctlsとkvm-bindingsを使用して/dev/kvmに対して構築。ゲストRAMはmmapを介して明示的に割り当てられます。',
+      stack_state_tag: '状態抽出',
+      stack_state_desc: 'KVM_GET_REGSとKVM_GET_SREGSを使用してアーキテクチャ状態をシリアライズし、決定論的な一時停止のためのゲストメモリ境界を定義します。',
+      stack_io_tag: 'ゼロコピーI/O',
+      stack_io_desc: 'ユーザー空間バッファリングを完全にバイパス。IORING_OP_WRITE_FIXED（DMA）を使用して、VMMのmmap済み物理メモリからストレージにゲストメモリページを直接送信します。',
+      stack_verify_tag: '検証',
+      stack_verify_desc: 'ゲストはレジスタを常に変更するベアメタル16ビットリアルモードペイロードを実行し、ウェイクアップ後の正確な状態再開を数学的に証明します。',
+      why_label: 'Indexableにとっての重要性',
+      why_body: 'これはAIエージェントの高密度化問題を解決します。概念的に、ブロックストレージに直接書き込むために使用される<code>\'io_uring\'</code> DMAアプローチは、ix.devがlibfabric/RDMAを介してコンテンツアドレス可能なストレージレイヤーに状態をプッシュする方法を反映しています。安全で慣用的なRustで完全に構築され、厳格なclippy設定を使用し、最新のLinuxカーネル向けに設計されています。',
+    },
+    zh: {
+      problem_label: '问题：LLM等待时间',
+      problem_body: 'AI编程代理大部分时间都在等待LLM API响应。在此网络I/O停机期间保持KVM客户机活动状态，消耗活跃的RAM和CPU调度器周期，是对基础设施资源的重大浪费。',
+      solution_label: '解决方案：我构建的内容',
+      solution_body: '我构建了一个基于Rust的微型VMM，可以立即冻结正在执行的KVM客户机，提取其状态，并通过<strong>\'io_uring\'</strong>以零拷贝方式将内存直接刷新到块存储。当LLM响应时，VM会唤醒并从中断处精确地恢复执行。',
+      stack_label: '技术栈',
+      stack_vmm_tag: '最小VMM',
+      stack_vmm_desc: '使用kvm-ioctls和kvm-bindings针对/dev/kvm构建。客户机RAM通过mmap显式分配。',
+      stack_state_tag: '状态提取',
+      stack_state_desc: '使用KVM_GET_REGS和KVM_GET_SREGS序列化架构状态，并定义客户机内存边界以实现确定性暂停。',
+      stack_io_tag: '零拷贝I/O',
+      stack_io_desc: '完全绕过用户空间缓冲。使用IORING_OP_WRITE_FIXED（DMA）将客户机内存页直接从VMM的mmap物理内存提交到存储。',
+      stack_verify_tag: '验证',
+      stack_verify_desc: '客户机运行一个不断修改寄存器的裸机16位实模式载荷，从数学上证明唤醒后的精确状态恢复。',
+      why_label: '对Indexable的意义',
+      why_body: '这解决了AI代理的超高密度问题。从概念上讲，这里使用的<code>\'io_uring\'</code> DMA方法直接写入块存储，反映了ix.dev通过libfabric/RDMA将状态推送到其内容寻址存储层的方式。它完全使用安全、惯用的Rust构建，采用严格的clippy配置，专为现代Linux内核设计。',
+    },
+    ko: {
+      problem_label: '문제: LLM 대기 시간',
+      problem_body: 'AI 코딩 에이전트는 LLM API 응답을 기다리는 데 대부분의 시간을 소비합니다. 이 네트워크 I/O 다운타임 동안 KVM 게스트를 활성 상태로 유지하면서 활성 RAM과 CPU 스케줄러 사이클을 소비하는 것은 인프라 리소스의 심각한 낭비입니다.',
+      solution_label: '솔루션: 내가 구축한 것',
+      solution_body: '실행 중인 KVM 게스트를 즉시 동결하고, 상태를 추출하고, <strong>\'io_uring\'</strong>을 통해 제로카피로 메모리를 블록 스토리지에 직접 플러시하는 Rust 기반 마이크로 VMM을 구축했습니다. LLM이 응답하면 VM이 깨어나서 중단된 지점에서 정확히 실행을 재개합니다.',
+      stack_label: '기술 스택',
+      stack_vmm_tag: '최소 VMM',
+      stack_vmm_desc: 'kvm-ioctls 및 kvm-bindings를 사용하여 /dev/kvm에 대해 구축. 게스트 RAM은 mmap을 통해 명시적으로 할당됩니다.',
+      stack_state_tag: '상태 추출',
+      stack_state_desc: 'KVM_GET_REGS 및 KVM_GET_SREGS를 사용하여 아키텍처 상태를 직렬화하고 결정론적 일시 중지를 위한 게스트 메모리 경계를 정의합니다.',
+      stack_io_tag: '제로카피 I/O',
+      stack_io_desc: '사용자 공간 버퍼링을 완전히 우회합니다. IORING_OP_WRITE_FIXED(DMA)를 사용하여 VMM의 mmap된 물리적 메모리에서 스토리지로 게스트 메모리 페이지를 직접 제출합니다.',
+      stack_verify_tag: '검증',
+      stack_verify_desc: '게스트는 레지스터를 지속적으로 변경하는 베어메탈 16비트 리얼모드 페이로드를 실행하여 웨이크업 후 정확한 상태 복원을 수학적으로 증명합니다.',
+      why_label: 'Indexable에 대한 중요성',
+      why_body: '이것은 AI 에이전트의 초고밀도 문제를 해결합니다. 개념적으로, 블록 스토리지에 직접 쓰기 위해 사용된 <code>\'io_uring\'</code> DMA 접근 방식은 ix.dev가 libfabric/RDMA를 통해 콘텐츠 주소 지정 가능한 스토리지 레이어에 상태를 푸시하는 방식을 반영합니다. 안전하고 관용적인 Rust로 완전히 구축되었으며, 엄격한 clippy 구성을 사용하여 최신 Linux 커널용으로 설계되었습니다.',
+    },
+  };
+
+  function switchLang(lang) {
+    const strings = i18n[lang];
+    if (!strings) return;
+    document.querySelectorAll('[data-i18n]').forEach(el => {
+      const key = el.getAttribute('data-i18n');
+      if (strings[key]) el.innerHTML = strings[key];
+    });
+    // Update active lang link
+    document.querySelectorAll('.nav-lang a').forEach(a => {
+      a.classList.toggle('active', a.textContent.trim() === lang);
+    });
+    // Update html lang attribute
+    document.documentElement.lang = lang;
+  }
+</script>
+
+</body>
+</html>
