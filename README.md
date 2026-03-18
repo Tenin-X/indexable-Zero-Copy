@@ -259,7 +259,9 @@ rust suspend storage/
 ├── payload.asm              # 16-bit real-mode guest payload
 ├── payload.bin              # Assembled payload binary
 ├── build_payload.sh         # NASM build script
+├── index.html               # ix.dev-style demo website with live simulation
 ├── Cargo.toml               # Dependencies: kvm-ioctls, kvm-bindings, io-uring, libc
+├── implementation_plan.md   # Original design document
 └── README.md                # This file
 ```
 
